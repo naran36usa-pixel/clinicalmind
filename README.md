@@ -1,9 +1,3 @@
-If you want a **100% clean, production-ready README** completely stripped of any chat, instructions, or placeholders, use this text block below.
-
-It contains exactly what an external developer, stakeholder, or employer should see when they visit your repository.
-
----
-
 ```markdown
 # ClinicalMind
 
