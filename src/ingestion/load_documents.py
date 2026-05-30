@@ -5,7 +5,8 @@ import os
 load_dotenv()
 
 # Load PDF with PyMuPDF
-pdf_path = "data/lecanemab_label.pdf"
+pdf_path = os.getenv("PDF_PATH", "data/lecanemab_label.pdf")
+doc = fitz.open(pdf_path)
 
 print("Loading document with PyMuPDF...")
 doc = fitz.open(pdf_path)

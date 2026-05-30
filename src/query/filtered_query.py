@@ -11,7 +11,7 @@ from llama_index.llms.anthropic import Anthropic
 from llama_index.core import Settings
 from pinecone import Pinecone
 
-load_dotenv("clinical.env")
+load_dotenv()
 
 # ── Initialize ─────────────────────────────────────────
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))

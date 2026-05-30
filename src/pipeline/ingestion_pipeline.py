@@ -9,7 +9,7 @@ from llama_index.vector_stores.pinecone import PineconeVectorStore
 from llama_index.embeddings.openai import OpenAIEmbedding
 from pinecone import Pinecone
 
-load_dotenv("clinical.env")
+load_dotenv()
 
 # ── Constants ──────────────────────────────────────────
 EMBEDDING_MODEL = "text-embedding-3-small"
@@ -45,7 +45,8 @@ Settings.embed_model = OpenAIEmbedding(
 
 # ── Load Document ──────────────────────────────────────
 print("Step 1: Loading document with PyMuPDF...")
-doc = fitz.open("data/lecanemab_label.pdf")
+PDF_PATH = os.getenv("PDF_PATH", "data/lecanemab_label.pdf")
+doc = fitz.open(PDF_PATH)
 
 # Extract text page by page
 pages_text = []

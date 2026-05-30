@@ -2,7 +2,7 @@ from dotenv import load_dotenv
 import os
 from pinecone import Pinecone, ServerlessSpec
 
-load_dotenv("clinical.env")
+load_dotenv()
 
 # Initialize Pinecone
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))

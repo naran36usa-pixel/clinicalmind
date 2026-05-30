@@ -1,135 +1,150 @@
+```markdown
 # ClinicalMind — Architecture
 
 ## System Overview
 
-ClinicalMind is a governed agentic RAG pipeline
-for clinical document intelligence. Built on FDA
-drug labels with GxP-compliant audit trail.
+ClinicalMind is a governed RAG pipeline for clinical document intelligence built on FDA drug labels. It demonstrates confidence-based routing, structured retrieval, and traceable execution logs.
+
+The system is designed around a key principle:
+
+> In regulated environments, uncertain answers should be escalated rather than generated.
+
+---
 
 ## Architecture Diagram
 
+
 ```
+
 ┌─────────────────────────────────────────────┐
-│           CLINICALMIND PIPELINE             │
+│              CLINICALMIND PIPELINE          │
 └─────────────────────────────────────────────┘
 
 INGESTION LAYER
 ───────────────
 FDA Drug Label PDF
-        │
-        ▼
+│
+▼
 PyMuPDF Text Extraction
-        │
-        ▼
+│
+▼
 Section-Aware Chunking
-(respects FDA label structure)
-        │
-        ▼
+(preserves FDA label structure)
+│
+▼
 Metadata Enrichment
 {drug_name, section_name, document_type}
-        │
-        ▼
+│
+▼
 OpenAI Embeddings
 (text-embedding-3-small, 1536 dim)
-        │
-        ▼
+│
+▼
 Pinecone Vector Store
 (metadata-filtered index)
 
-
 QUERY LAYER — LangGraph State Machine
 ──────────────────────────────────────
-
-User Query + Section Filter
-        │
-        ▼
+User Query + Optional Filters
+│
+▼
 ┌───────────────────┐
 │  Retrieval Agent  │
-│  - Embed query    │
-│  - Filter by      │
-│    section +drug  │
-│  - Fetch top-k    │
+│ - Embed query     │
+│ - Apply filters   │
+│ - Fetch top-k     │
 └────────┬──────────┘
-         │
-         ▼
+│
+▼
 ┌───────────────────┐
 │ Confidence Check  │
-│  - Score > 0.5?   │
+│ - Compute score   │
+│ - Apply threshold │
 └────────┬──────────┘
-         │
-    ┌────┴────┐
-    │         │
-    ▼         ▼
-┌────────┐ ┌──────────────┐
-│Response│ │ Human Review │
-│ Agent  │ │    Flag      │
-│(Claude)│ │  ⚠️ flagged  │
-└────┬───┘ └──────┬───────┘
-     │             │
-     └──────┬──────┘
-            │
-            ▼
-┌───────────────────┐
-│    Audit Log      │
-│  Append-only      │
-│  21 CFR Part 11   │
-│  pattern          │
-└───────────────────┘
+│
+┌────┴────┐
+│         │
+▼         ▼
+Low Score   High Score
+│         │
+▼         ▼
+Human Review    Response Generation
+Flagged ⚠️      (Claude Sonnet)
+│         │
+└──────┬──┘
+│
+▼
+Audit Log
+
 ```
+
+---
 
 ## Key Design Decisions
 
 ### 1. Section-Aware Chunking
-FDA labels have defined sections. Fixed-size chunking
-crosses section boundaries — mixing contraindications
-with dosage content. Section-aware chunking keeps
-chunks within named sections.
+FDA labels contain structured sections such as indications, warnings, and dosage information. Instead of using fixed-size chunking, ClinicalMind preserves section boundaries during ingestion. This helps maintain semantic integrity by preventing unrelated clinical content from being mixed within embeddings.
 
-**Impact:** Retrieval precision improved significantly.
-Indications query correctly returns indications content
-not adverse reactions content.
+### 2. Confidence-Based Routing
+The system evaluates retrieval confidence before invoking the LLM. Queries below a configurable threshold are routed to a human review path instead of generating a response. This design emphasizes controlled failure over forced generation.
 
-### 2. Confidence Threshold Gate
-Queries below 0.5 confidence route to human review
-rather than generating uncertain answers.
+### 3. Traceable Execution Logging
+Each query execution produces a structured log entry capturing:
+- Timestamp
+- Query text
+- Confidence score
+- Routing decision
+- Retrieved section metadata
+- Response preview
 
-**Rationale:** In regulated pharma environments an
-uncertain AI answer has real consequences. The system
-refuses to answer rather than hallucinate.
-
-### 3. Append-Only Audit Trail
-Every query — pass or fail — generates an audit log
-entry. No overwrites. Full traceability.
-
-**Rationale:** Modelled on 21 CFR Part 11 electronic
-records requirements. AI outputs in regulated
-environments need the same auditability as data
-pipelines.
+The logging system is append-only during runtime execution to support traceability during testing and debugging.
 
 ### 4. Metadata-Filtered Retrieval
-Each vector carries section_name and drug_name
-metadata. Queries filter before searching — not after.
+Each vector entry includes metadata such as:
+- `drug_name`
+- `section_name`
+- `document_type`
 
-**Rationale:** Filtering before retrieval guarantees
-containment. Adding new drugs doesn't degrade
-retrieval quality.
+Filtering is applied before retrieval to constrain search scope and improve relevance. This enables scaling to multiple documents without degrading retrieval precision.
 
-## Stack
+---
 
-| Component | Tool | Reason |
-|---|---|---|
-| PDF extraction | PyMuPDF | Most reliable for FDA labels |
-| Embeddings | OpenAI text-embedding-3-small | Cost efficient, well documented |
-| Vector store | Pinecone | Managed, metadata filtering |
-| Agent orchestration | LangGraph | Conditional routing, state machine |
-| LLM | Claude Sonnet | Strong clinical reasoning |
-| Audit trail | JSONL append-only | Simple, GxP-pattern compliant |
+## Technology Stack
+
+| Component | Tool | Purpose |
+| :--- | :--- | :--- |
+| **PDF Extraction** | PyMuPDF | FDA label parsing |
+| **Embeddings** | OpenAI text-embedding-3-small | Semantic representation |
+| **Vector Store** | Pinecone | Similarity search with metadata filtering |
+| **Orchestration** | LangGraph | State-based workflow control |
+| **LLM** | Claude 3.5 Sonnet | Response generation |
+| **Logging** | JSONL | Structured execution traces |
+
+---
 
 ## Failure Modes
 
-| Scenario | System Behaviour |
-|---|---|
-| Low retrieval confidence | Routes to human review |
-| Irrelevant query | Routes to human review |
-| Section not in index | Empty retrieval, human review |
-| API failure | Error captured in state, logged |
+| Scenario | System Behavior |
+| :--- | :--- |
+| **Low retrieval confidence** | Routed to human review queue |
+| **Out-of-domain query** | Flagged for manual review |
+| **Missing section in index** | No response generated; execution stopped |
+| **External API failure** | Error captured and logged inside execution state |
+
+---
+
+## Limitations
+
+* Designed for a single FDA label dataset in this version.
+* Evaluation is demonstration-scale and not production-validated.
+* Human review workflow is simulated via log routing.
+* Audit logs are local flat files and not cryptographically secured.
+* Not intended for clinical decision-making or regulatory use.
+
+---
+
+## Future Direction
+
+The next planned enhancement is support for multiple FDA drug labels with metadata-aware retrieval and cross-document filtering. The core governance and routing architecture will remain unchanged, enabling scalable expansion while preserving controlled failure behavior.
+
+```

@@ -1,11 +1,13 @@
 from dotenv import load_dotenv
 import fitz
 import json
+import os
 
 load_dotenv()
 
 print("Loading document...")
-doc = fitz.open("data/lecanemab_label.pdf")
+PDF_PATH = os.getenv("PDF_PATH", "data/lecanemab_label.pdf")
+doc = fitz.open(PDF_PATH)
 full_text = ""
 for page in doc:
     full_text += page.get_text()

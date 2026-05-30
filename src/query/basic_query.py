@@ -3,7 +3,7 @@ import os
 from pinecone import Pinecone
 from openai import OpenAI
 
-load_dotenv("clinical.env")
+load_dotenv()
 
 # ── Initialize ─────────────────────────────────────────
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
