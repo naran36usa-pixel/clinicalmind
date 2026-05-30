@@ -126,7 +126,7 @@ Future iterations may incorporate additional confidence signals such as reranker
 | Component              | Technology                         |
 | ---------------------- | ---------------------------------- |
 | Workflow Orchestration | LangGraph                          |
-| LLM                    | Claude 3.5 Sonnet                  |
+| LLM                    | Claude 4 Sonnet                  |
 | Embeddings             | OpenAI `text-embedding-3-small`    |
 | Vector Database        | Pinecone                           |
 | PDF Processing         | PyMuPDF                            |
@@ -144,9 +144,8 @@ clinicalmind/
 ├── src/
 │   ├── ingestion/
 │   ├── indexer/
-│   ├── agents/
 │   ├── pipeline/
-│   └── utils/
+│   └── query/
 │
 ├── docs/
 │   ├── architecture.md
@@ -190,7 +189,7 @@ Create a `.env` file in the project root:
 
 ```env
 ANTHROPIC_API_KEY=your_key
-OPENAI_API_KEY=your_key
+OPEN_AI_API_KEY=your_key
 PINECONE_API_KEY=your_key
 PINECONE_ENVIRONMENT=your_environment
 ```
@@ -199,22 +198,37 @@ PINECONE_ENVIRONMENT=your_environment
 
 ## 🚀 Running the Project
 
-### Execute Ingestion Pipeline
+### Run Ingestion
 
 ```bash
-python -m src.ingestion.pdf_parser
+python src/ingestion/ingestion_pipeline.py
 ```
 
-### Build Index
+### Load & Chunk Documents
 
 ```bash
-python -m src.indexer.vector_store
+python src/ingestion/load_documents.py
+python src/ingestion/chunk_documents.py
 ```
 
-### Launch Workflow
+### Build Index & Store Embeddings
 
 ```bash
-python -m src.pipeline.graph_orchestrator
+python src/indexer/create_index.py
+python src/indexer/store_embeddings.py
+```
+
+### Launch Pipeline
+
+```bash
+python src/pipeline/langgraph_pipeline.py
+```
+
+### Run Queries
+
+```bash
+python src/query/basic_query.py
+python src/query/filtered_query.py
 ```
 
 ---
