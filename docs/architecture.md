@@ -1,4 +1,3 @@
-```markdown
 # ClinicalMind — Architecture
 
 ## System Overview
@@ -12,10 +11,7 @@ The system is designed around a key principle:
 ---
 
 ## Architecture Diagram
-
-
-```
-
+```text
 ┌─────────────────────────────────────────────┐
 │              CLINICALMIND PIPELINE          │
 └─────────────────────────────────────────────┘
@@ -23,62 +19,59 @@ The system is designed around a key principle:
 INGESTION LAYER
 ───────────────
 FDA Drug Label PDF
-│
-▼
+       │
+       ▼
 PyMuPDF Text Extraction
-│
-▼
-Section-Aware Chunking
+       │
+       ▼
+Section-Aware Chunking 
 (preserves FDA label structure)
-│
-▼
+       │
+       ▼
 Metadata Enrichment
 {drug_name, section_name, document_type}
-│
-▼
-OpenAI Embeddings
+       │
+       ▼
+OpenAI Embeddings 
 (text-embedding-3-small, 1536 dim)
-│
-▼
-Pinecone Vector Store
+       │
+       ▼
+Pinecone Vector Store 
 (metadata-filtered index)
+
 
 QUERY LAYER — LangGraph State Machine
 ──────────────────────────────────────
 User Query + Optional Filters
-│
-▼
+       │
+       ▼
 ┌───────────────────┐
 │  Retrieval Agent  │
 │ - Embed query     │
 │ - Apply filters   │
 │ - Fetch top-k     │
 └────────┬──────────┘
-│
-▼
+         │
+         ▼
 ┌───────────────────┐
 │ Confidence Check  │
 │ - Compute score   │
 │ - Apply threshold │
 └────────┬──────────┘
-│
-┌────┴────┐
-│         │
-▼         ▼
+         │
+    ┌────┴────┐
+    │         │
+    ▼         ▼
 Low Score   High Score
-│         │
-▼         ▼
+    │         │
+    ▼         ▼
 Human Review    Response Generation
 Flagged ⚠️      (Claude Sonnet)
-│         │
-└──────┬──┘
-│
-▼
-Audit Log
-
-```
-
----
+    │         │
+    └──────┬──┘
+           │
+           ▼
+       Audit Log
 
 ## Key Design Decisions
 
@@ -90,20 +83,20 @@ The system evaluates retrieval confidence before invoking the LLM. Queries below
 
 ### 3. Traceable Execution Logging
 Each query execution produces a structured log entry capturing:
-- Timestamp
-- Query text
-- Confidence score
-- Routing decision
-- Retrieved section metadata
-- Response preview
+* Timestamp
+* Query text
+* Confidence score
+* Routing decision
+* Retrieved section metadata
+* Response preview
 
 The logging system is append-only during runtime execution to support traceability during testing and debugging.
 
 ### 4. Metadata-Filtered Retrieval
 Each vector entry includes metadata such as:
-- `drug_name`
-- `section_name`
-- `document_type`
+* `drug_name`
+* `section_name`
+* `document_type`
 
 Filtering is applied before retrieval to constrain search scope and improve relevance. This enables scaling to multiple documents without degrading retrieval precision.
 
@@ -146,5 +139,3 @@ Filtering is applied before retrieval to constrain search scope and improve rele
 ## Future Direction
 
 The next planned enhancement is support for multiple FDA drug labels with metadata-aware retrieval and cross-document filtering. The core governance and routing architecture will remain unchanged, enabling scalable expansion while preserving controlled failure behavior.
-
-```
