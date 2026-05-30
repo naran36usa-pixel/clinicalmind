@@ -1,6 +1,6 @@
-Here is your completely polished, production-ready `README.md`.
+If you want a **100% clean, production-ready README** completely stripped of any chat, instructions, or placeholders, use this text block below.
 
-I fixed the Windows compatibility commands in the setup section, synchronized the PDF filename to match your Python scripts (`lecanemab_label.pdf`), and swapped in your actual GitHub repository URL so anyone can clone it instantly.
+It contains exactly what an external developer, stakeholder, or employer should see when they visit your repository.
 
 ---
 
@@ -90,32 +90,30 @@ clinicalmind/
 ## Setup
 
 ```bash
-# 1. Clone repo & navigate into it
 git clone [https://github.com/naran36usa-pixel/clinicalmind.git](https://github.com/naran36usa-pixel/clinicalmind.git)
 cd clinicalmind
 
-# 2. Create virtual environment
 python -m venv venv
 
-# 3. Activate virtual environment
-.\venv\Scripts\activate      # Windows (PowerShell)
-# source venv/bin/activate   # Mac/Linux
+# For Windows:
+.\venv\Scripts\activate
+copy .env.example .env
 
-# 4. Install dependencies
+# For Mac/Linux:
+# source venv/bin/activate
+# cp .env.example .env
+
 pip install -r requirements.txt
 
-# 5. Add API keys
-# Copy the template to a real .env file and add your secret keys
-copy .env.example .env        # Windows
-# cp .env.example .env       # Mac/Linux
+```
 
-# 6. Run ingestion & pipeline
+> ⚠️ **Note on Data Files:** Because FDA label PDFs are protected by `.gitignore` rules, the `data/lecanemab_label.pdf` file will not be downloaded via Git. Ensure the target PDF is manually dropped into the `data/` folder before running scripts.
+
+```bash
 python src/06_architected_ingestion.py
 python src/08_langgraph_pipeline.py
 
 ```
-
-> ⚠️ **Note on Data Files:** Because FDA label PDFs are protected by our `.gitignore` rules, the `data/lecanemab_label.pdf` file will not be downloaded automatically via Git. Please ensure the target PDF is manually dropped into the `data/` folder before initializing scripts.
 
 ## Sample Output
 
@@ -149,5 +147,9 @@ Confidence too low for reliable clinical answer.
   "chunks_retrieved": 1,
   "response_preview": "LEQEMBI is indicated..."
 }
+
+```
+
+```
 
 ```
