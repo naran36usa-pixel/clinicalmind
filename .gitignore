@@ -1,0 +1,6 @@
+.env
+clinical.env
+*.env
+venv/
+docs/audit_log.jsonl
+data/*.pdf
