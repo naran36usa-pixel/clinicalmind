@@ -1,0 +1,11 @@
+anthropic
+fitz
+langgraph
+langchain-anthropic
+llama-index-core
+llama-index-vector-stores-pinecone
+llama-index-embeddings-openai
+openai
+pinecone
+pymupdf
+python-dotenv
