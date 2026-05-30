@@ -4,3 +4,8 @@ clinical.env
 venv/
 docs/audit_log.jsonl
 data/*.pdf
+docs/chunks_full.json
+docs/chunks_preview.json
+docs/extracted_text.txt
+docs/nodes_preview.json
+docs/audit_log.jsonl
