@@ -164,7 +164,7 @@ clinicalmind/
 ### Clone Repository
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/clinicalmind.git
+git clone https://github.com/naran36usa-pixel/clinicalmind.git
 cd clinicalmind
 ```
 
