@@ -2,11 +2,11 @@
 
 ## System Overview
 
-ClinicalMind is a governed RAG pipeline for clinical document intelligence built on FDA drug labels. It demonstrates confidence-based routing, structured retrieval, and traceable execution logs.
+ClinicalMind is a governed, enterprise-grade RAG pipeline for clinical document intelligence built on multi-drug FDA labels. It demonstrates deterministic hybrid routing, structured isolated retrieval, query hydration, and traceable execution logs.
 
-The system is designed around a key principle:
+The system is designed around a core GxP engineering principle:
 
-> In regulated environments, uncertain answers should be escalated rather than generated.
+> In regulated environments, uncertain answers must be escalated rather than generated.
 
 ---
 
@@ -17,62 +17,64 @@ The system is designed around a key principle:
 │           CLINICALMIND PIPELINE             │
 └─────────────────────────────────────────────┘
 
-INGESTION LAYER
-───────────────
-FDA Drug Label PDF
+INGESTION LAYER (Config-Driven)
+───────────────────────────────
+Multi-Drug FDA Label PDFs + JSON Configs
 │
 ▼
-PyMuPDF Text Extraction
-│
-▼
-Section-Aware Chunking
-(preserves FDA label structure)
+PyMuPDF Text Extraction & Section-Aware Chunking
 │
 ▼
 Metadata Enrichment
 {drug_name, section_name, document_type}
 │
 ▼
-OpenAI Embeddings
-(text-embedding-3-small, 1536 dim)
-│
-▼
-Pinecone Vector Store
-(metadata-filtered index)
+OpenAI Embeddings (text-embedding-3-small, 1536 dim) ──► Pinecone Vector Store
 
-QUERY LAYER — LangGraph State Machine
-──────────────────────────────────────
+QUERY LAYER — LangGraph State Machine (Hybrid Flow)
+───────────────────────────────────────────────────
 
-User Query + Optional Filters
+Streamlit UI User Query & Sidebar Token Constraints
 │
 ▼
-┌───────────────────┐
-│ Retrieval Agent   │
-│ - Embed query     │
-│ - Apply filters   │
-│ - Fetch top-k     │
-└────────┬──────────┘
+┌────────────────────────────────────────────────────────┐
+│ Hybrid Intent Router Node                              │
+│ - Check for Explicit UI Sidebar Parameters             │
+│   ├─► IF PRESENT: Enforce Boundaries & Bypass LLM      │
+│   └─► IF ABSENT: Fallback to LLM Extraction (Claude)  │
+└────────────────────────┬───────────────────────────────┘
 │
 ▼
-┌───────────────────┐
-│ Confidence Check   │
-│ - Compute score    │
-│ - Apply threshold  │
-└────────┬──────────┘
-│
-┌────┴────┐
-│         │
-▼         ▼
-Low Score   High Score
-│             │
-▼             ▼
-Human Review  Response Generation
-Flagged ⚠️    (Claude Sonnet)
-│             │
-└──────┬──────┘
+┌────────────────────────────────────────────────────────┐
+│ Isolated Retrieval Agent Node                          │
+│ - Context Hydration Engine (Injects Target Context)    │
+│ - Calculate Embeddings on Hydrated Payload             │
+│ - Apply Compound Metadata Filters Layer                │
+└────────────────────────┬───────────────────────────────┘
 │
 ▼
-Audit Log
+┌────────────────────────────────────────────────────────┐
+│ GxP Confidence Check Gate                              │
+│ - Evaluate Max Vector Match Score against Threshold    │
+└────────────────────────┬───────────────────────────────┘
+│
+┌────────────┴────────────┐
+│ Score < 0.5000          │ Score >= 0.5000
+▼                         ▼
+┌───────────────────────┐ ┌───────────────────────┐
+│   Human Escrow Node   │ │Grounded Response Node │
+│ (Safety Isolation ⚠️) │ │ (Claude 4.5 Sonnet)   │
+└───────────┬───────────┘ └───────────┬───────────┘
+│                         │
+└────────────┬────────────┘
+             ▼
+┌────────────────────────────────────────────────────────┐
+│ 21 CFR Part 11 Audit Trail Logger                      │
+│ - Append-Only Transaction Ledger (docs/audit_log.jsonl)│
+└────────────────────────┬───────────────────────────────┘
+│
+▼
+Render Streamlit UI
 ```
 
 ---
@@ -80,51 +82,22 @@ Audit Log
 ## Key Design Decisions
 
 ### 1. Section-Aware Chunking
+FDA labels contain structured, highly explicit sections (e.g., `INDICATIONS AND USAGE`, `WARNINGS AND PRECAUTIONS`). ClinicalMind abandons arbitrary token-length splitting in favor of strict section boundary preservation during ingestion. This maintains semantic integrity and blocks toxic cross-contamination of unrelated clinical variables within individual vector embeddings.
 
-FDA labels contain structured sections such as indications, warnings, and dosage information.
+### 2. Hybrid Intent-Driven Routing
+To eliminate the architectural disconnect between user interfaces and backend routing, the pipeline uses a hybrid evaluation pattern. If a user defines targeted constraints using the Streamlit dashboard dropdowns, the entry node intercepts execution, enforces those boundaries, and bypasses LLM inference entirely. If the query arrives unstructured, the system falls back to a semantic entity extraction parser to map the target domain.
 
-Instead of using fixed-size chunking, ClinicalMind preserves section boundaries during ingestion.
+### 3. Context-Hydrated Isolated Retrieval
+Raw, shorthand user questions (e.g., *"give me the adverse reactions"*) naturally yield poor proximity scores in raw vector spaces due to keyword scarcity. The retrieval engine solves this by dynamically hydrating the query payload with explicit structured metadata context before text vectorization. This optimizes semantic proximity math at the database layer while maintaining sharp pre-retrieval metadata isolation inside Pinecone.
 
-This helps maintain semantic integrity by preventing unrelated clinical content from being mixed within embeddings.
+### 4. Confidence-Based Governance Gate
+The system enforces a strict mathematical safety boundary ($0.5000$). Every retrieved payload is checked at runtime. If the maximum vector proximity score drops below the threshold, the system triggers an emergency brake, blocking downstream generation to eliminate hallucination risks, and diverts the execution state to a human escrow node.
 
----
+### 5. Config-Driven Ingestion Engine
+The ingestion layer supports multi-drug scaling out-of-the-box. Adding a new pharmaceutical product requires zero pipeline code modifications. The ingestion engine dynamically discovers newly added PDF files and corresponding JSON configuration mappings at runtime, automating chunk parsing, indexing, and vector isolation seamlessly.
 
-### 2. Confidence-Based Routing
-
-The system evaluates retrieval confidence before invoking the LLM.
-
-Queries below a configurable threshold are routed to a human review path instead of generating a response.
-
-This design emphasizes controlled failure over forced generation.
-
----
-
-### 3. Traceable Execution Logging
-
-Each query execution produces a structured log entry capturing:
-
-- Timestamp
-- Query text
-- Confidence score
-- Routing decision
-- Retrieved section metadata
-- Response preview
-
-The logging system is append-only during runtime execution to support traceability during testing and debugging.
-
----
-
-### 4. Metadata-Filtered Retrieval
-
-Each vector entry includes metadata such as:
-
-- drug_name
-- section_name
-- document_type
-
-Filtering is applied before retrieval to constrain search scope and improve relevance.
-
-This enables scaling to multiple documents without degrading retrieval precision.
+### 6. Traceable 21 CFR Part 11 Audit Trail
+Every single transaction pipeline traversal is recorded immutably in an append-only JSONL log ledger. Each log entry captures the complete deterministic lifecycle of the execution state: timestamp, query, hydrated input, metadata filters, array of raw mathematical match scores, compliance routing result, and a generation payload preview.
 
 ---
 
@@ -132,38 +105,38 @@ This enables scaling to multiple documents without degrading retrieval precision
 
 | Component | Tool | Purpose |
 |---|---|---|
-| PDF Extraction | PyMuPDF | FDA label parsing |
-| Embeddings | OpenAI text-embedding-3-small | Semantic representation |
-| Vector Store | Pinecone | Similarity search with metadata filtering |
-| Orchestration | LangGraph | State-based workflow control |
-| LLM | Claude 3.5 Sonnet | Response generation |
-| Logging | JSONL | Structured execution traces |
+| PDF Extraction | PyMuPDF | FDA structured label parsing |
+| Embeddings | OpenAI text-embedding-3-small | Semantic vector representation |
+| Vector Store | Pinecone | Similarity search with native metadata filtering |
+| Orchestration | LangGraph | State-based deterministic workflow control |
+| LLM Engine | Claude 4.5 Sonnet | Entity parsing fallback & Grounded response generation |
+| Frontend | Streamlit | Control dashboard & verification UI |
+| Logging | JSONL | Append-only GxP traceable transaction execution ledger |
 
 ---
 
-## Failure Modes
+## Failure Modes & Mitigations
 
-| Scenario | System Behavior |
-|---|---|
-| Low retrieval confidence | Routed to human review |
-| Out-of-domain query | Flagged for review |
-| Missing section in index | No response generated |
-| External API failure | Error captured and logged in execution state |
+| Scenario | System Behavior | Mitigation Strategy |
+|---|---|---|
+| Low retrieval confidence ($< 0.5000$) | Intercepted by Gate Node | Block generation; Route to simulated human escrow node. |
+| Missing keyword / Vague pronoun | Intercepted by Retrieval Node | Context Hydration Engine appends structured drug tokens to vector inputs. |
+| Cross-contamination risk | Filtered at DB layer | Multi-drug scoping isolated explicitly via pre-retrieval metadata filters. |
+| External API Downstream Failure | Exception State Caught | State machine captures error stack and seals transaction directly inside the audit ledger. |
 
 ---
 
 ## Limitations
 
-- Designed for a single FDA label dataset in this version
-- Evaluation is demonstration-scale and not production-validated
-- Human review workflow is simulated
-- Audit logs are local and not cryptographically secured
-- Not intended for clinical decision-making or regulatory use
+- Evaluation is scaled for multi-drug demonstration and not yet production-validated.
+- The human review dashboard resolution workflow is simulated within the state graph.
+- Local JSONL audit logs lack cryptographic hashing or distributed security protections.
+- The platform functions as a document intelligence utility and is not intended for direct clinical decision-making.
 
 ---
 
 ## Future Direction
 
-The next planned enhancement is support for multiple FDA drug labels with metadata-aware retrieval and cross-document filtering.
-
-The core governance and routing architecture will remain unchanged, enabling scalable expansion while preserving controlled failure behavior.
+1. **Cryptographic Trail Verification:** Upgrade the append-only audit ledger to utilize SHA-256 block hashing or ledger database endpoints to achieve absolute non-repudiation tracking.
+2. **Production GxP Validation:** Formally expand testing suites to meet strict compliance validation requirements for healthcare and life sciences cloud environments.
+3. **Cross-Section Synthesis:** Refactor the retrieval agent to support compound list evaluation (e.g., scanning `ADVERSE REACTIONS` and `BOXED WARNINGS` concurrently) when answering highly complex safety queries.

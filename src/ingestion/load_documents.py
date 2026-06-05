@@ -1,31 +1,32 @@
-from dotenv import load_dotenv
-import fitz  # PyMuPDF
 import os
+import fitz  # PyMuPDF
 
-load_dotenv()
+def load_pdf_document(config):
+    """
+    Step 1: Extract raw text page-by-page from the target PDF asset.
+    Uses robust path anchoring relative to project root.
+    """
+    file_name = config.get("file_name")
+    if not file_name:
+        raise KeyError(f"Configuration for '{config.get('drug_name', 'Unknown')}' lacks a 'file_name' field.")
 
-# Load PDF with PyMuPDF
-pdf_path = os.getenv("PDF_PATH", "data/lecanemab_label.pdf")
-doc = fitz.open(pdf_path)
+    # Anchor paths to the project root directory
+    # Go up two levels from src/ingestion/ to reach the main clinicalmind root
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    pdf_path = os.path.join(base_dir, "data", "labels", file_name)
+    
+    if not os.path.exists(pdf_path):
+        raise FileNotFoundError(f"Expected PDF asset missing at resolved path: {pdf_path}")
 
-print("Loading document with PyMuPDF...")
-doc = fitz.open(pdf_path)
-
-# Extract text page by page
-full_text = ""
-for page_num, page in enumerate(doc):
-    text = page.get_text()
-    full_text += f"\n--- Page {page_num + 1} ---\n{text}"
-
-print(f"Total pages: {len(doc)}")
-print(f"Total characters: {len(full_text)}")
-print(f"\nFirst 500 characters:")
-print(full_text[:500])
-
-# Save extracted text for review
-with open("docs/extracted_text.txt", "w", 
-          encoding="utf-8") as f:
-    f.write(full_text)
-
-print("\n--- Text saved to docs/extracted_text.txt ---")
-doc.close()
+    print(f"  [Load] Extraction initialized for: {config['drug_name']}")
+    doc = fitz.open(pdf_path)
+    
+    pages_text = []
+    for page_num, page in enumerate(doc):
+        pages_text.append(page.get_text())
+        
+    full_text = "\n".join(pages_text)
+    print(f"  [Load] Complete. Character count: {len(full_text)}")
+    doc.close()
+    
+    return full_text

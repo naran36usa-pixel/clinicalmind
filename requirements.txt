@@ -1,5 +1,4 @@
 anthropic
-fitz
 langgraph
 langchain-anthropic
 llama-index-core
@@ -9,3 +8,4 @@ openai
 pinecone
 pymupdf
 python-dotenv
+streamlit

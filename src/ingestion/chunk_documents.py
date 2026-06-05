@@ -1,84 +1,65 @@
-from dotenv import load_dotenv
-import fitz
-import json
-import os
+import re
+from llama_index.core.schema import TextNode
 
-load_dotenv()
+def split_by_section_with_config(config, full_text):
+    """
+    Step 2 & 3: Run section-aware chunking and map metadata taxonomy.
+    """
+    valid_sections = config.get("valid_sections")
+    if not valid_sections:
+        raise KeyError(f"Configuration for '{config.get('drug_name')}' lacks 'valid_sections' validation definitions.")
 
-print("Loading document...")
-PDF_PATH = os.getenv("PDF_PATH", "data/lecanemab_label.pdf")
-doc = fitz.open(PDF_PATH)
-full_text = ""
-for page in doc:
-    full_text += page.get_text()
-print(f"Total characters: {len(full_text)}")
+    print(f"  [Chunk] Executing regex structure parsing...")
+    
+    # Identify numbered sections like "1 INDICATIONS AND USAGE"
+    section_pattern = r'\n(\d{1,2}\s+[A-Z][A-Z\s,/]{5,})\n'
+    split_content = re.split(section_pattern, full_text)
 
-# Merge lines into chunks
-lines = full_text.split("\n")
-chunks_raw = []
-current_chunk = ""
+    sections_found = {}
+    current_section = None
 
-for line in lines:
-    line = line.strip()
-    if not line:
-        if len(current_chunk.strip()) > 50:
-            chunks_raw.append(current_chunk.strip())
-        current_chunk = ""
-    else:
-        current_chunk += " " + line
+    for item in split_content:
+        item_stripped = item.strip()
+        if not item_stripped:
+            continue
 
-if len(current_chunk.strip()) > 50:
-    chunks_raw.append(current_chunk.strip())
+        if re.match(r'^\d{1,2}\s+[A-Z][A-Z\s,/]{5,}$', item_stripped):
+            section_name = re.sub(r'^\d{1,2}\s+', '', item_stripped).strip()
+            if section_name in valid_sections:
+                current_section = section_name
+                sections_found[current_section] = ""
+            else:
+                current_section = None
+        else:
+            if current_section:
+                sections_found[current_section] += item_stripped + "\n\n"
 
-print(f"Raw chunks: {len(chunks_raw)}")
+    # Turn text paragraphs into structured LlamaIndex nodes
+    nodes = []
+    for section_name, section_text in sections_found.items():
+        if not section_text.strip():
+            continue
 
-# Noise filter — relaxed
-def is_noise(chunk):
-    words = chunk.split()
-    if len(words) < 8:
-        return True
+        paragraphs = section_text.strip().split("\n\n")
+        for idx, paragraph in enumerate(paragraphs):
+            paragraph = paragraph.strip()
+            if len(paragraph) < 50:  # Noise gate
+                continue
 
-    # Contains chart symbol
-    if '■' in chunk or '▲' in chunk:
-        return True
+            # Merge config data structure directly into LlamaIndex metadata
+            node = TextNode(
+                text=paragraph,
+                metadata={
+                    "drug_name": config["drug_name"],
+                    "manufacturer": config["manufacturer"],
+                    "therapeutic_area": config["therapeutic_area"],
+                    "document_type": config["document_type"],
+                    "section_name": section_name,
+                    "paragraph_index": idx
+                }
+            )
+            node.excluded_llm_metadata_keys = ["paragraph_index"]
+            nodes.append(node)
 
-    # High density of single quotes = garbled figure
-    single_quotes = chunk.count("'")
-    if single_quotes > 10:
-        return True
-
-    # High ratio of single character words
-    single = sum(1 for w in words if len(w) == 1)
-    if len(words) > 15 and single / len(words) > 0.4:
-        return True
-
-    return False
-
-clean_chunks = [c for c in chunks_raw if not is_noise(c)]
-
-print(f"Noise removed: {len(chunks_raw) - len(clean_chunks)}")
-print(f"Clean chunks: {len(clean_chunks)}")
-
-# Stats
-avg = sum(len(c) for c in clean_chunks) // len(clean_chunks)
-print(f"Average length: {avg} chars")
-
-# Samples
-print(f"\nChunk 1:\n{clean_chunks[0][:300]}")
-print(f"\nChunk 10:\n{clean_chunks[9][:300]}")
-print(f"\nChunk 20:\n{clean_chunks[19][:300]}")
-
-# Save
-preview = [{"chunk_id": i, "preview": c[:150],
-            "chars": len(c)}
-           for i, c in enumerate(clean_chunks[:25])]
-
-with open("docs/chunks_preview.json", "w",
-          encoding="utf-8") as f:
-    json.dump(preview, f, indent=2)
-
-with open("docs/chunks_full.json", "w",
-          encoding="utf-8") as f:
-    json.dump(clean_chunks, f, indent=2)
-
-print("\n✅ Script 02 Complete")
+    print(f"  [Chunk] Complete. Generated {len(nodes)} governance nodes.")
+    return nodes

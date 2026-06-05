@@ -1,35 +1,33 @@
-from dotenv import load_dotenv
 import os
 import json
 from datetime import datetime, timezone
-# change to:
-"timestamp": datetime.now(timezone.utc).isoformat()
-from typing import TypedDict, List
+from typing import TypedDict, List, Dict, Any
+from dotenv import load_dotenv
+
+# Path anchoring to ensure environment keys load properly from root level
+base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+load_dotenv(dotenv_path=os.path.join(base_dir, ".env"))
+
 from langgraph.graph import StateGraph, END
 from pinecone import Pinecone
 from openai import OpenAI
 import anthropic
 
-load_dotenv()
-
-# ── Initialize ─────────────────────────────────────────
+# ── Initialize Production Infrastructure Clients ───────
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 pinecone_index = pc.Index("clinicalmind")
-openai_client = OpenAI(
-    api_key=os.getenv("OPEN_AI_API_KEY")
-)
-claude_client = anthropic.Anthropic(
-    api_key=os.getenv("ANTHROPIC_API_KEY")
-)
+openai_client = OpenAI(api_key=os.getenv("OPEN_AI_API_KEY"))
+claude_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
-# ── Constants ──────────────────────────────────────────
+# ── Governance Constants ─────────────────────────────────
 CONFIDENCE_THRESHOLD = 0.5
-AUDIT_LOG_PATH = "docs/audit_log.jsonl"
+AUDIT_LOG_PATH = os.path.join(base_dir, "docs", "audit_log.jsonl")
 
 # ── State Definition ───────────────────────────────────
 class ClinicalQueryState(TypedDict):
     query: str
-    section_filter: str
+    detected_drugs: List[str]       # Structured extraction target
+    section_filter: str             # Standardized target section 
     retrieved_chunks: List[str]
     retrieval_scores: List[float]
     confidence_score: float
@@ -37,105 +35,188 @@ class ClinicalQueryState(TypedDict):
     response: str
     error: str
 
-
-# ── Agent 1 — Retrieval Agent ──────────────────────────
-def retrieval_agent(
-    state: ClinicalQueryState
-) -> ClinicalQueryState:
-
-    print(f"\n[Retrieval Agent] Query: {state['query']}")
-
-    try:
-        # Embed query
-        response = openai_client.embeddings.create(
-            model="text-embedding-3-small",
-            input=state["query"]
-        )
-        query_embedding = response.data[0].embedding
-
-        # Build filter
-        filter_dict = None
-        if state.get("section_filter"):
-            filter_dict = {
-                "section_name": {
-                    "$eq": state["section_filter"]
-                }
-            }
-            print(f"[Retrieval Agent] "
-                  f"Filtering to: "
-                  f"{state['section_filter']}")
-
-        # Query Pinecone
-        results = pinecone_index.query(
-            vector=query_embedding,
-            top_k=3,
-            include_metadata=True,
-            filter=filter_dict
-        )
-
-        # Extract chunks and scores
-        chunks = []
-        scores = []
-
-        for match in results.matches:
-            node_content = match.metadata.get(
-                "_node_content", "{}"
-            )
-            try:
-                node_data = json.loads(node_content)
-                text = node_data.get("text", "")
-            except:
-                text = match.metadata.get("text", "")
-
-            chunks.append(text)
-            scores.append(round(match.score, 4))
-            print(f"[Retrieval Agent] "
-                  f"Score: {match.score:.4f} | "
-                  f"Section: "
-                  f"{match.metadata.get('section_name')}")
-
+# ── Node 1: Hybrid Intent Extraction Router ────────────
+def intent_router_agent(state: ClinicalQueryState) -> ClinicalQueryState:
+    """
+    Supervisor Node: Analyzes query boundaries. Establishes a hybrid model
+    that respects explicit UI/API inputs before falling back to LLM extraction.
+    """
+    print(f"\n🧠 [Intent Router] Evaluating query boundaries: '{state['query']}'")
+    
+    # ── HYBRID MODE ENFORCEMENT ──────────────────────────────────────────────────────
+    # If the user selected a drug explicitly in the Streamlit UI sidebar, use it directly.
+    # This prevents generic phrasing like "give me indications" from triggering short-circuits.
+    if state.get("detected_drugs") and len(state["detected_drugs"]) > 0 and state["detected_drugs"][0] != "":
+        print(f"🧬 [Intent Router] Enforcing explicit UI-driven boundaries: {state['detected_drugs']} | Section: {state['section_filter']}")
         return {
             **state,
-            "retrieved_chunks": chunks,
-            "retrieval_scores": scores,
             "error": ""
         }
+    # ──────────────────────────────────────────────────────────────────────────────────
 
+    print("[Intent Router] No UI boundary constraints detected. Running LLM semantic entity parser...")
+    prompt = f"""You are a clinical supervisor routing system analyzing an FDA drug label database query.
+Extract the target pharmaceutical product(s) and the specific fda label section requested.
+
+Available Drugs in System: Keytruda, Leqembi, Trodelvy.
+Available Sections in System: INDICATIONS AND USAGE, CONTRAINDICATIONS, WARNINGS AND PRECAUTIONS, ADVERSE REACTIONS.
+
+Your response must be strict raw JSON matching this format exactly, with no additional conversational text:
+{{
+    "detected_drugs": ["Keytruda"],
+    "section_filter": "WARNINGS AND PRECAUTIONS"
+}}
+
+If no matching drug or section is found, return them as empty lists/strings.
+Query: {state['query']}
+Response:"""
+
+    try:
+        response = claude_client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=200,
+            temperature=0.0,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        
+        raw_text = response.content[0].text.strip()
+        
+        # Robust Markdown block sanitization to handle model text leaking
+        if raw_text.startswith("```"):
+            lines = raw_text.splitlines()
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            raw_text = "\n".join(lines).strip()
+        raw_text = raw_text.strip("`").strip()
+        
+        extraction = json.loads(raw_text)
+        
+        # Standardize colloquial extractions to match our exact database metadata strings
+        drug_map = {
+            "keytruda": "Keytruda (Pembrolizumab)",
+            "leqembi": "Leqembi (Lecanemab)",
+            "trodelvy": "Trodelvy (Sacituzumab govitecan-hziy)"
+        }
+        
+        raw_drugs = extraction.get("detected_drugs", [])
+        if isinstance(raw_drugs, str):  
+            raw_drugs = [raw_drugs]
+            
+        normalized_drugs = [drug_map[d.lower().strip()] for d in raw_drugs if d.lower().strip() in drug_map]
+        
+        print(f"[Intent Router] Extracted Entities -> Drugs: {normalized_drugs} | Section: {extraction.get('section_filter')}")
+        
+        return {
+            **state,
+            "detected_drugs": normalized_drugs,
+            "section_filter": extraction.get("section_filter", ""),
+            "error": ""
+        }
     except Exception as e:
-        print(f"[Retrieval Agent] Error: {e}")
+        print(f"[Intent Router] Error parsing intent: {e}")
+        return {**state, "error": f"Intent extraction failure: {str(e)}"}
+
+# ── Node 2: Isolated Retrieval Agent ────────────────────
+def retrieval_agent(state: ClinicalQueryState) -> ClinicalQueryState:
+    """
+    Retrieval Node: Executes dynamic vector space lookups.
+    Forces strict drug-level isolation to prevent cross-contamination and
+    hydrates generic queries with structured metadata context for optimized search math.
+    """
+    if state.get("error"):
+        return state
+
+    if not state["detected_drugs"] or state["detected_drugs"] == [""]:
+        print("[Retrieval Agent] Short-circuiting execution: No recognized drug domain specified.")
         return {
             **state,
             "retrieved_chunks": [],
             "retrieval_scores": [],
-            "error": str(e)
+            "error": ""  
         }
 
+    print(f"⚙️ [Retrieval Agent] Executing isolated database query loop for {state['detected_drugs']}...")
 
-# ── Agent 2 — Confidence Check ─────────────────────────
-def confidence_check(
-    state: ClinicalQueryState
-) -> ClinicalQueryState:
-    """
-    Evaluates retrieval quality.
-    Sets confidence score and human review flag.
-    This is the GxP governance gate.
-    """
-    print(f"\n[Confidence Check] Evaluating...")
+    # ── METADATA QUERY HYDRATION ENGINE ──────────────────────────────────────────────
+    # Forces the embedding model to recognize domain context even if the user typed vague pronouns.
+    embedding_input = state["query"]
+    target_drug = state["detected_drugs"][0]
+    clean_brand = target_drug.split("(")[0].strip().lower()
+    
+    # Hydrate if query uses pronouns or lacks the concrete brand name keyword
+    if "this" in embedding_input.lower() or "the drug" in embedding_input.lower() or clean_brand not in embedding_input.lower():
+        embedding_input = f"{embedding_input} (Context: Target pharmaceutical product is {target_drug})"
+        print(f"🔧 [Retrieval Agent] Context Hydration Injection -> Optimized String: '{embedding_input}'")
+    # ──────────────────────────────────────────────────────────────────────────────────
 
+    try:
+        # Generate embedding using the optimized context-aware string
+        response = openai_client.embeddings.create(
+            model="text-embedding-3-small",
+            input=embedding_input
+        )
+        query_embedding = response.data[0].embedding
+
+        # Build compound metadata filter conditions matching Pinecone's exact syntax
+        filter_dict = {
+            "drug_name": {"$in": state["detected_drugs"]}
+        }
+        
+        if state.get("section_filter"):
+            filter_dict["section_name"] = {"$eq": state["section_filter"]}
+            
+        print(f"[Retrieval Agent] Applying Pinecone Metadata Filters: {filter_dict}")
+
+        results = pinecone_index.query(
+            vector=query_embedding,
+            top_k=4,
+            include_metadata=True,
+            filter=filter_dict
+        )
+
+        chunks = []
+        scores = []
+
+        for match in results.matches:
+            text = match.metadata.get("text", "")
+            if not text and "_node_content" in match.metadata:
+                try:
+                    text = json.loads(match.metadata["_node_content"]).get("text", "")
+                except:
+                    pass
+
+            if text:
+                chunks.append(text)
+                scores.append(round(match.score, 4))
+                print(f"  📑 [Match Score: {match.score:.4f}] Product: {match.metadata.get('drug_name')} | Sec: {match.metadata.get('section_name')}")
+
+        return {
+            **state,
+            "retrieved_chunks": chunks,
+            "retrieval_scores": scores
+        }
+
+    except Exception as e:
+        print(f"[Retrieval Agent] Critical DB Failure: {e}")
+        return {**state, "error": str(e)}
+
+# ── Node 3: GxP Confidence Check Gate ───────────────────
+def confidence_check(state: ClinicalQueryState) -> ClinicalQueryState:
+    """
+    Governance Gate: Enforces clinical threshold limits before allowing LLM inference.
+    """
+    print(f"🛡️ [Confidence Check] Evaluating mathematical validation boundaries...")
     scores = state.get("retrieval_scores", [])
+    
+    if state.get("error"):
+        return {**state, "confidence_score": 0.0, "requires_human_review": True}
 
-    if not scores:
-        confidence = 0.0
-    else:
-        # Use top score as confidence signal
-        confidence = max(scores)
-
+    confidence = max(scores) if scores else 0.0
     requires_review = confidence < CONFIDENCE_THRESHOLD
 
-    print(f"[Confidence Check] "
-          f"Score: {confidence:.4f} | "
-          f"Threshold: {CONFIDENCE_THRESHOLD} | "
-          f"Human review: {requires_review}")
+    print(f"[Confidence Check] Max Vector Score: {confidence:.4f} | Gate Limit: {CONFIDENCE_THRESHOLD} | Escalation Status: {requires_review}")
 
     return {
         **state,
@@ -143,52 +224,30 @@ def confidence_check(
         "requires_human_review": requires_review
     }
 
-
-# ── Routing Function ───────────────────────────────────
-def route_by_confidence(
-    state: ClinicalQueryState
-) -> str:
-    """
-    Conditional routing based on confidence.
-    High confidence → generate response
-    Low confidence → flag for human review
-    """
+# ── Routing Decision Determinant ─────────────────────
+def route_by_confidence(state: ClinicalQueryState) -> str:
     if state["requires_human_review"]:
-        print("[Router] Low confidence → Human review")
+        print("🔀 [Router Path] Diverting to human escrow node.")
         return "human_review"
     else:
-        print("[Router] High confidence → Response")
+        print("🔀 [Router Path] Advancing to final response generation node.")
         return "response"
 
-
-# ── Agent 3 — Response Agent ───────────────────────────
-def response_agent(
-    state: ClinicalQueryState
-) -> ClinicalQueryState:
-
-    print(f"\n[Response Agent] Generating answer...")
+# ── Node 4: Grounded Response Agent ─────────────────────
+def response_agent(state: ClinicalQueryState) -> ClinicalQueryState:
+    print(f"🤖 [Response Agent] Generating model inference answer...")
 
     if not state["retrieved_chunks"]:
-        return {
-            **state,
-            "response": "No relevant content found."
-        }
+        return {**state, "response": "Verification error: Empty isolated data context returned."}
 
-    context_parts = []
-    for i, chunk in enumerate(
-        state["retrieved_chunks"]
-    ):
-        context_parts.append(
-            f"[Source {i+1}]: {chunk}"
-        )
+    context_parts = [f"[Source {i+1}]: {chunk}" for i, chunk in enumerate(state["retrieved_chunks"])]
     context = "\n\n".join(context_parts)
 
-    prompt = f"""You are a clinical document assistant
-analyzing FDA drug label information.
+    prompt = f"""You are a clinical document assistant analyzing verified FDA drug label information.
 
-Answer using ONLY the provided context.
-If answer not in context say so clearly.
-Cite which source you used.
+Answer the query using ONLY the provided metadata context. 
+If the explicit facts are missing or unverified inside the context block, clearly state that you cannot answer.
+Always explicitly cite the specific product name and your contextual sources ([Source 1], etc.) in your writeup.
 
 Context:
 {context}
@@ -200,119 +259,70 @@ Answer:"""
     try:
         claude_response = claude_client.messages.create(
             model="claude-sonnet-4-5",
-            max_tokens=500,
-            messages=[
-                {"role": "user", "content": prompt}
-            ]
+            max_tokens=600,
+            temperature=0.1,
+            messages=[{"role": "user", "content": prompt}]
         )
-        answer = claude_response.content[0].text
-        print(f"[Response Agent] Answer generated")
-
-        return {**state, "response": answer}
-
+        return {**state, "response": claude_response.content[0].text}
     except Exception as e:
-        return {
-            **state,
-            "response": f"Response failed: {e}"
-        }
+        return {**state, "response": f"Downstream Generation Failure: {e}"}
 
-
-# ── Agent 4 — Human Review ─────────────────────────────
-def human_review_agent(
-    state: ClinicalQueryState
-) -> ClinicalQueryState:
-    """
-    Handles low confidence queries.
-    Flags for human review instead of
-    returning uncertain answer.
-    This is the regulated environment design decision —
-    uncertain AI answer in pharma is dangerous.
-    """
-    print(f"\n[Human Review] Flagging query...")
-
+# ── Node 5: Human Review Agent ─────────────────────────
+def human_review_agent(state: ClinicalQueryState) -> ClinicalQueryState:
+    print(f"⚠️ [Human Review Node] Flagging trace logs for escrow...")
+    
     review_message = (
-        f"⚠️ HUMAN REVIEW REQUIRED\n"
-        f"Query: {state['query']}\n"
-        f"Confidence score: "
-        f"{state['confidence_score']:.4f} "
-        f"(below threshold {CONFIDENCE_THRESHOLD})\n"
-        f"Reason: Retrieval confidence too low to "
-        f"generate a reliable clinical answer.\n"
-        f"Action: Please review source documents "
-        f"manually or rephrase the query."
+        f"⚠️ CLINICAL COMPLIANCE GUARD FLAGGED THIS QUERY\n"
+        f"User Query: '{state['query']}'\n"
+        f"Calculated Score: {state['confidence_score']:.4f} (Below Safety Threshold: {CONFIDENCE_THRESHOLD})\n"
+        f"System Message: Semantic lookup failed to locate authoritative chunks inside the specified drug domain.\n"
+        f"Action Requirement: Manual review of root regulatory documentation recommended."
     )
-
-    print(f"[Human Review] {review_message}")
-
     return {**state, "response": review_message}
 
-
-# ── Audit Log ──────────────────────────────────────────
-def audit_log(
-    state: ClinicalQueryState
-) -> ClinicalQueryState:
+# ── Node 6: 21 CFR Part 11 Audit Trail Logger ─────────
+def audit_log(state: ClinicalQueryState) -> ClinicalQueryState:
     """
-    Append-only audit trail for every query.
-    Modelled on GxP audit trail principles —
-    21 CFR Part 11 compliance pattern.
-    No overwrites. Full traceability.
+    Maintains an append-only, trace-tracked transaction ledger for GxP validation.
     """
     log_entry = {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "query": state["query"],
-        "section_filter": state.get(
-            "section_filter", ""
-        ),
-        "confidence_score": state.get(
-            "confidence_score", 0.0
-        ),
-        "requires_human_review": state.get(
-            "requires_human_review", False
-        ),
-        "retrieval_scores": state.get(
-            "retrieval_scores", []
-        ),
-        "chunks_retrieved": len(
-            state.get("retrieved_chunks", [])
-        ),
-        "response_preview": state.get(
-            "response", ""
-        )[:200],
+        "detected_drugs": state.get("detected_drugs", []),
+        "section_filter": state.get("section_filter", ""),
+        "confidence_score": state.get("confidence_score", 0.0),
+        "requires_human_review": state.get("requires_human_review", False),
+        "retrieval_scores": state.get("retrieval_scores", []),
+        "chunks_retrieved": len(state.get("retrieved_chunks", [])),
+        "response_preview": state.get("response", "")[:180],
         "error": state.get("error", "")
     }
 
-    # Append-only — never overwrite
-    with open(AUDIT_LOG_PATH, "a",
-              encoding="utf-8") as f:
+    os.makedirs(os.path.dirname(AUDIT_LOG_PATH), exist_ok=True)
+    with open(AUDIT_LOG_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(log_entry) + "\n")
 
-    print(f"\n[Audit Log] Entry written — "
-          f"timestamp: {log_entry['timestamp']}")
-
+    print(f"📝 [Audit Log] Transaction sealed under timestamp hash: {log_entry['timestamp']}")
     return state
 
-
-# ── Build LangGraph ────────────────────────────────────
+# ── Orchestration Compiler ─────────────────────────────
 def build_pipeline():
-
     workflow = StateGraph(ClinicalQueryState)
 
-    # Add all nodes
+    # Register Nodes
+    workflow.add_node("intent_router", intent_router_agent)
     workflow.add_node("retrieval", retrieval_agent)
-    workflow.add_node(
-        "confidence_check", confidence_check
-    )
+    workflow.add_node("confidence_check", confidence_check)
     workflow.add_node("response", response_agent)
     workflow.add_node("human_review", human_review_agent)
     workflow.add_node("audit", audit_log)
 
-    # Entry point
-    workflow.set_entry_point("retrieval")
-
-    # Linear edges
+    # Direct Progression Map
+    workflow.set_entry_point("intent_router")
+    workflow.add_edge("intent_router", "retrieval")
     workflow.add_edge("retrieval", "confidence_check")
 
-    # Conditional routing — the key Stop B addition
+    # Conditional Routing Gate
     workflow.add_conditional_edges(
         "confidence_check",
         route_by_confidence,
@@ -322,65 +332,9 @@ def build_pipeline():
         }
     )
 
-    # Both paths converge at audit
+    # Convergence Links to Audit Step
     workflow.add_edge("response", "audit")
     workflow.add_edge("human_review", "audit")
     workflow.add_edge("audit", END)
 
     return workflow.compile()
-
-
-# ── Run Tests ──────────────────────────────────────────
-if __name__ == "__main__":
-
-    pipeline = build_pipeline()
-    print("Pipeline compiled successfully")
-    print(f"Confidence threshold: {CONFIDENCE_THRESHOLD}")
-
-    test_queries = [
-        {
-            "query": "What are the indications "
-                     "for Leqembi?",
-            "section_filter": "INDICATIONS AND USAGE"
-        },
-        {
-            "query": "What are the contraindications?",
-            "section_filter": "CONTRAINDICATIONS"
-        },
-        {
-            "query": "What are the warnings?",
-            "section_filter": "WARNINGS AND PRECAUTIONS"
-        },
-        {
-            "query": "What is the chemical composition "
-                     "of dark matter?",
-            "section_filter": ""
-        }
-    ]
-
-    for test in test_queries:
-        print(f"\n{'='*60}")
-
-        initial_state = ClinicalQueryState(
-            query=test["query"],
-            section_filter=test["section_filter"],
-            retrieved_chunks=[],
-            retrieval_scores=[],
-            confidence_score=0.0,
-            requires_human_review=False,
-            response="",
-            error=""
-        )
-
-        result = pipeline.invoke(initial_state)
-
-        print(f"\nFINAL ANSWER:")
-        print(result["response"])
-        print(f"Confidence: {result['confidence_score']}")
-        print(
-            f"Human review: "
-            f"{result['requires_human_review']}"
-        )
-
-    print("\n✅ Stop B Complete")
-    print("Check docs/audit_log.jsonl for audit trail")
