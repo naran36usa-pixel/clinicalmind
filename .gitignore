@@ -1,10 +1,41 @@
+# --- Environment Variables & Secrets ---
 .env
+.env.*
+!.env.example
+
+# --- Python & Virtual Environments ---
 venv/
+env/
+ENV/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- Data, Logs & Documentation Outputs ---
+# (Maintaining your existing exclusions)
 data/labels/*.pdf
 docs/audit_log.jsonl
 docs/chunks_full.json
 docs/chunks_preview.json
 docs/extracted_text.txt
 docs/nodes_preview.json
+
+# --- Database & Vector Indexes ---
+.pinecone/
+*.db
+*.sqlite
+
+# --- Operating System & IDE Artifacts ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.ipynb_checkpoints/
+
+# --- Temporary/Test Files ---
+tests/data/
+*.log

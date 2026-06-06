@@ -65,8 +65,22 @@ def main():
         print(f"▶️ Starting Data Lifecycle Pipeline for target: {config['drug_name']}")
         
         try:
+            # Step 1: Extract continuous text stream from raw file asset
             raw_text = load_pdf_document(config)
+            
+            # Step 2: Run section-aware boundary token chunking
             nodes = split_by_section_with_config(config, raw_text)
+            
+            # --- Architectural Guardrail Check ---
+            # Intercept layout parsing failures immediately. If regex failed to capture structural boundaries
+            # due to an extraction anomaly, drop execution to protect index metadata partitions from corruption.
+            if not nodes:
+                print(f"❌ Critical Pipeline Bypassed: Zero database nodes extracted for target '{config['drug_name']}'.")
+                print(f"   Review structural heading boundaries inside the source document or fix config valid_sections mappings.\n")
+                continue
+                
+            # Step 3: Embed text fragments and upsert directly into Pinecone partitions
+            print(f"📤 Initiating vector synchronization to cloud infrastructure layer...")
             upsert_to_pinecone(nodes)
             print(f"✅ Ingestion chain validated for: {config['drug_name']}\n")
             
